@@ -4,24 +4,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Edit3, ImagePlus, MoreHorizontal, Plus, Search, Upload, X, Trash2, Loader2 } from "lucide-react";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { Edit3, ImagePlus, MoreHorizontal, Plus, Search, Upload, X, Trash2 } from "lucide-react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 
-const PAGE_SIZE = 8;
-
 export default function AdminCatalog() {
   const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [showEditor, setShowEditor] = useState(window.location.search.includes("new=true"));
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
 
   // Editor State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -36,107 +29,27 @@ export default function AdminCatalog() {
   const [variantsData, setVariantsData] = useState([{ id: 'temp-'+Date.now(), sku: 'SKU-'+Date.now(), label: "500 g", price: 0, stock: 0 }]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Debounce search
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedQuery(query);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  const observer = useRef<IntersectionObserver | null>(null);
-  const lastProductElementRef = useCallback((node: HTMLDivElement | HTMLTableRowElement | null) => {
-    if (loading || loadingMore) return;
-    if (observer.current) observer.current.disconnect();
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMore) {
-        setPage(prevPage => prevPage + 1);
-      }
-    });
-    if (node) observer.current.observe(node);
-  }, [loading, loadingMore, hasMore]);
-
-  // Initial fetch / fetch on search change
-  useEffect(() => {
-    let cancelled = false;
-    const fetchInitial = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        setPage(1);
-
-        const searchParams = new URLSearchParams();
-        if (debouncedQuery) searchParams.set("q", debouncedQuery);
-        searchParams.set("limit", PAGE_SIZE.toString());
-        searchParams.set("offset", "0");
-
-        const response = await apiFetch(`admin/products?${searchParams.toString()}`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        
-        const data = await response.json();
-        const items = data.data || data;
-        const newProducts = Array.isArray(items) ? items : [];
-
-        if (!cancelled) {
-          setProducts(newProducts);
-          setHasMore(newProducts.length === PAGE_SIZE);
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          console.error("Error fetching admin products:", err);
-          setError(err.message);
-          toast.error("Failed to load products");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    fetchInitial();
-    return () => { cancelled = true; };
-  }, [debouncedQuery]);
-
-  // Fetch more on scroll
-  useEffect(() => {
-    if (page === 1) return;
-    
-    let cancelled = false;
-    const fetchMore = async () => {
-      try {
-        setLoadingMore(true);
-        const searchParams = new URLSearchParams();
-        if (debouncedQuery) searchParams.set("q", debouncedQuery);
-        searchParams.set("limit", PAGE_SIZE.toString());
-        searchParams.set("offset", ((page - 1) * PAGE_SIZE).toString());
-
-        const response = await apiFetch(`admin/products?${searchParams.toString()}`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        
-        const data = await response.json();
-        const items = data.data || data;
-        const newProducts = Array.isArray(items) ? items : [];
-
-        if (!cancelled) {
-          setProducts(prev => {
-            const existingIds = new Set(prev.map(p => p.id));
-            const filteredNew = newProducts.filter(p => !existingIds.has(p.id));
-            return [...prev, ...filteredNew];
-          });
-          setHasMore(newProducts.length === PAGE_SIZE);
-        }
-      } catch (err: any) {
-        console.error("Error fetching more admin products:", err);
-      } finally {
-        if (!cancelled) setLoadingMore(false);
-      }
-    };
-    fetchMore();
-    return () => { cancelled = true; };
-  }, [page, debouncedQuery]);
-
-  const refetch = () => {
-    setPage(1);
-    setDebouncedQuery(query); // force refresh if same query
+  const fetchProducts = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await apiFetch('admin/products');
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      let data = await response.json();
+      data = data.data || data;
+      setProducts(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      console.error("Error fetching admin products:", err);
+      setError(err.message);
+      toast.error("Failed to load products");
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => {
+    fetchProducts();
+  }, []);
 
   const toggleProductActive = async (id: string, currentStatus: boolean, name: string) => {
     try {
@@ -148,9 +61,7 @@ export default function AdminCatalog() {
       });
       if (!response.ok) throw new Error("Failed to update status");
       toast.success(currentStatus ? `${name} is hidden` : `${name} is live`);
-      
-      // Optimistic update
-      setProducts(prev => prev.map(p => p.id === id ? { ...p, isActive: !currentStatus } : p));
+      fetchProducts();
     } catch (err: any) {
       toast.error("Status update failed", { description: err.message });
     }
@@ -225,6 +136,11 @@ export default function AdminCatalog() {
         productId = data.data.id;
       }
 
+      // Handle variants updates (super naive diff for simplicity in this hackathon context)
+      // Ideally we would delete missing, update existing, insert new. 
+      // For simplicity, we just delete all existing variants and recreate them if it's an update, or just create them.
+      // Since variants table doesn't cascade delete on this simplified UI flow we just try to update/insert.
+      
       for (const variant of variantsData) {
         const variantPayload = {
           sku: variant.sku,
@@ -234,6 +150,7 @@ export default function AdminCatalog() {
         };
         
         if (variant.id.startsWith('temp-')) {
+          // Create new variant
           const res = await apiFetch(`admin/products/${productId}/variants`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -241,6 +158,7 @@ export default function AdminCatalog() {
           });
           if (!res.ok) console.error("Failed to create variant", await res.text());
         } else {
+          // Update variant
           const res = await apiFetch(`admin/variants/${variant.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -252,9 +170,7 @@ export default function AdminCatalog() {
 
       toast.success(editingId ? "Product updated" : "Product created");
       setShowEditor(false);
-      // We force a refresh of the first page to see the new product
-      setPage(1);
-      setDebouncedQuery(query); 
+      fetchProducts();
     } catch (err: any) {
       toast.error("Save failed", { description: err.message });
     } finally {
@@ -281,11 +197,16 @@ export default function AdminCatalog() {
       const response = await apiFetch(`admin/products/${id}`, { method: 'DELETE' });
       if (!response.ok) throw new Error("Failed to delete product");
       toast.success("Product deleted");
-      setProducts(prev => prev.filter(p => p.id !== id));
+      fetchProducts();
     } catch (err: any) {
       toast.error("Failed to delete product", { description: err.message });
     }
   };
+
+  // Filter products based on search query
+  const visible = products.filter((product) =>
+    product.name.toLowerCase().includes(query.toLowerCase())
+  );
 
   return (
     <AdminShell
@@ -297,21 +218,21 @@ export default function AdminCatalog() {
         </Button>
       }
     >
-      {loading && page === 1 ? (
+      {loading ? (
         <div className="flex items-center justify-center py-8">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
         </div>
-      ) : error && page === 1 ? (
+      ) : error ? (
         <div className="rounded-[1.5rem] border border-dashed border-red-200 bg-red-50/50 px-6 py-16 text-center">
           <h3 className="font-black text-red-600">Failed to load catalog</h3>
           <p className="mt-2 text-sm text-red-800/80">{error}</p>
-          <button onClick={() => refetch()} className="mt-6 rounded-full bg-red-600 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-red-700">Retry</button>
+          <button onClick={() => fetchProducts()} className="mt-6 rounded-full bg-red-600 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-red-700">Retry</button>
         </div>
       ) : products.length === 0 ? (
         <div className="mt-10 rounded-[1.5rem] border border-dashed border-black/15 bg-white px-6 py-16 text-center">
           <Search className="mx-auto size-7 text-muted-foreground" />
-          <h3 className="mt-4 font-black">{debouncedQuery ? "No matching products found" : "Database is empty"}</h3>
-          <p className="mt-2 text-sm text-muted-foreground">{debouncedQuery ? "Try another search term." : "No products found in the catalog."}</p>
+          <h3 className="mt-4 font-black">Database is empty</h3>
+          <p className="mt-2 text-sm text-muted-foreground">No products found in the catalog.</p>
         </div>
       ) : (
         <>
@@ -326,11 +247,10 @@ export default function AdminCatalog() {
           </div>
 
           <div className="mt-5 space-y-3 md:hidden">
-            {products.map((product, index) => {
+            {visible.map((product) => {
               const stock = product.variants?.reduce((sum: number, variant: any) => sum + variant.stock, 0) || 0;
-              const isLast = products.length === index + 1;
               return (
-                <article key={product.id} className="rounded-2xl bg-[#FBF9F6] p-4 ring-1 ring-black/5" ref={isLast ? lastProductElementRef : null}>
+                <article key={product.id} className="rounded-2xl bg-[#FBF9F6] p-4 ring-1 ring-black/5">
                   <div className="flex gap-3">
                     <img src={product.image || 'https://placehold.co/150'} alt="" className="size-14 rounded-xl object-cover" />
                     <div className="min-w-0 flex-1">
@@ -367,13 +287,12 @@ export default function AdminCatalog() {
                 </tr>
               </thead>
               <tbody>
-                {products.map((product, index) => {
+                {visible.map((product) => {
                   const stock = product.variants?.reduce((sum: number, variant: any) => sum + variant.stock, 0) || 0;
                   const minPrice = product.variants?.length ? Math.min(...product.variants.map((v: any) => v.price)) : 0;
-                  const isLast = products.length === index + 1;
                   
                   return (
-                    <tr key={product.id} className="border-b border-black/5 hover:bg-[#FCFAF7]" ref={isLast ? lastProductElementRef : null}>
+                    <tr key={product.id} className="border-b border-black/5 hover:bg-[#FCFAF7]">
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-3">
                           <img src={product.image || 'https://placehold.co/150'} alt="" className="size-12 rounded-xl object-cover" />
@@ -403,12 +322,6 @@ export default function AdminCatalog() {
               </tbody>
             </table>
           </div>
-
-          {loadingMore && (
-            <div className="flex items-center justify-center py-6">
-              <Loader2 className="animate-spin text-[#B4232C] size-6" />
-            </div>
-          )}
         </>
       )}
 
